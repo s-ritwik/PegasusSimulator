@@ -70,12 +70,87 @@ Add the following lines to your ``~/.bashrc`` or ``~/.zshrc`` file.
 
 .. code:: bash
 
-   # Isaac Sim root directory
-   export ISAACSIM_PATH="${HOME}/isaacsim"
-   # Isaac Sim python executable
-   alias ISAACSIM_PYTHON="${ISAACSIM_PATH}/python.sh"
-   # Isaac Sim app
-   alias ISAACSIM="${ISAACSIM_PATH}/isaac-sim.sh"
+    # ---------------------------
+    # ISAAC SIM SETUP
+    # ---------------------------
+    # Isaac Sim root directory
+    export ISAACSIM_PATH="${HOME}/isaacsim"
+    # Isaac Sim python executable
+    export ISAACSIM_PYTHON="${ISAACSIM_PATH}/python.sh"
+    # Isaac Sim app
+    export ISAACSIM="${ISAACSIM_PATH}/isaac-sim.sh"
+
+    # Define an auxiliary function to launch Isaac Sim or run scripts with Isaac Sim's python
+    # This is done to avoid conflicts between ROS 2 and Isaac Sim's Python environment
+    isaac_run() {
+
+        # ------------------
+        # === VALIDATION ===
+        # ------------------
+        if [ ! -x "$ISAACSIM_PYTHON" ]; then
+            echo "❌ IsaacSim python.sh not found at: $ISAACSIM_PYTHON"
+            return 1
+        fi
+        if [ ! -x "$ISAACSIM" ]; then
+            echo "❌ IsaacSim launcher not found at: $ISAACSIM"
+            return 1
+        fi
+
+        # -------------------------
+        # === CLEAN ENVIRONMENT ===
+        # -------------------------
+        # Unset ROS 2 environment variables to avoid conflicts with Isaac's Python 3.11
+        unset ROS_VERSION
+        unset ROS_PYTHON_VERSION
+        unset ROS_DISTRO
+        unset AMENT_PREFIX_PATH
+        unset COLCON_PREFIX_PATH
+        unset PYTHONPATH
+        unset CMAKE_PREFIX_PATH
+        
+        # Remove ROS 2 paths from LD_LIBRARY_PATH if present
+        export LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "/opt/ros/humble" | paste -sd':' -)
+        export LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v "/opt/ros/jazzy" | paste -sd':' -)
+
+        # Set the correct ROS2 Python version for Isaac Sim (Python 3.11) (using the isaac sim ros2 bridge extension)
+        export ROS_DISTRO=humble
+        export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${ISAACSIM_PATH}/exts/isaacsim.ros2.bridge/humble/lib
+
+        # ---------------------
+        # === RUN ISAAC SIM ===
+        # ---------------------
+
+        # If when running isaac_run we don't provide any arguments, launch the full Isaac Sim GUI.
+        if [ $# -eq 0 ]; then
+            # No args → Launch full Isaac Sim GUI
+            echo "🧠 Launching Isaac Sim GUI..."
+            "${ISAACSIM}"
+
+        # If when running isaac_run we provide arguments starting with "--", pass them to the Isaac Sim executable.
+        elif [[ "$1" == --* ]]; then
+            # Arguments start with "--" → pass them to Isaac Sim executable
+            echo "⚙️  Launching Isaac Sim with options: $*"
+            "${ISAACSIM}" "$@"
+
+        # If we provide a python file as the first argument, run it with Isaac Sim's python interpreter.
+        elif [ -f "$1" ]; then
+            # First argument is a Python file → run with Isaac Sim's Python
+            local SCRIPT_PATH="$1"
+            shift
+            echo "🚀 Running Python script with Isaac Sim: $SCRIPT_PATH"
+            "${ISAACSIM_PYTHON}" "$SCRIPT_PATH" "$@"
+
+        else
+            # Unrecognized input
+            echo "❌ Unknown argument or file not found: '$1'"
+            echo "Usage:"
+            echo "  isaac_run                 → launch GUI"
+            echo "  isaac_run my_script.py    → run script with IsaacSim Python"
+            echo "  isaac_run --headless ...  → launch IsaacSim with CLI flags"
+            return 1
+        fi
+    }
 
 In the remaining of the documentation, we will refer to the Isaac Sim's path as ``ISAACSIM_PATH`` ,
 the provided python interpreter as ``ISAACSIM_PYTHON`` and the simulator itself as ``ISAACSIM`` .
@@ -91,10 +166,10 @@ open a new terminal window (**Ctrl+Alt+T**), and test the following commands:
     .. code:: bash
 
         # Run the simulator with the --help argument to see all available options
-        ISAACSIM --help
+        isaac_run --help
 
         # Run the simulator. A new window should open
-        ISAACSIM
+        isaac_run
 
 - Check that you can launch the simulator from a python script (standalone mode)
 
