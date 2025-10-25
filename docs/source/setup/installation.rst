@@ -44,7 +44,7 @@ In order to install Isaac Sim on linux, download the zip file containing the `Wo
     rm isaac-sim-standalone-5.1.0-linux-x86_64.zip
 
 
-The short video with the installation guide for Pegasus Simulator is also available `here <https://youtu.be/YCp5E8nazag>`__, but the Isaac Sim install method presented is no longer available. You should follow the instructions above to install Isaac Sim 4.5.0. **See video from 1:25 min onwards for the installation of Pegasus Simulator.**
+The short video with the installation guide for Pegasus Simulator is also available `here <https://youtu.be/YCp5E8nazag>`__, but the Isaac Sim install method presented is no longer available. You should follow the instructions above to install Isaac Sim 5.1.0. **See video from 1:25 min onwards for the installation of Pegasus Simulator.**
 
     ..  youtube:: YCp5E8nazag
         :width: 100%
