@@ -141,40 +141,66 @@ class ROS2CameraGraph(Graph):
             ],
         }
 
-        # Add camerasHelper for each selected camera type
-        # valid_camera_type = False
-        # for camera_type in self._types:
-        #     if not camera_type in ["rgb", "depth", "depth_pcl", "semantic_segmentation", "instance_segmentation", "bbox_2d_tight", "bbox_2d_loose", "bbox_3d", "camera_info"]:
-        #         continue
+        # Create the camera node that publishes the data from the cameras to ROS2 topics
+        valid_camera_type = False
+        for camera_type in self._types:
+            if not camera_type in ["rgb", "depth", "depth_pcl", "semantic_segmentation", "instance_segmentation", "bbox_2d_tight", "bbox_2d_loose", "bbox_3d"]:
+                continue
 
-        #     camera_helper_name = f"camera_helper_{camera_type}"
+            camera_helper_name = f"camera_helper_{camera_type}"
 
-        #     graph_config[keys.CREATE_NODES] += [
-        #         (camera_helper_name, "isaacsim.ros2.bridge.ROS2CameraHelper")
-        #     ]
-        #     graph_config[keys.CONNECT] += [
-        #         ("set_camera.outputs:execOut", f"{camera_helper_name}.inputs:execIn"),
-        #         ("get_render_product.outputs:renderProductPath", f"{camera_helper_name}.inputs:renderProductPath")
-        #     ]
-        #     graph_config[keys.SET_VALUES] += [
-        #         (f"{camera_helper_name}.inputs:nodeNamespace", self._namespace),
-        #         (f"{camera_helper_name}.inputs:frameId", self._tf_frame_id),
-        #         (f"{camera_helper_name}.inputs:topicName", f"{self._base_topic}/{camera_type}"),
-        #         (f"{camera_helper_name}.inputs:type", camera_type)
-        #     ]
+            graph_config[keys.CREATE_NODES] += [
+                (camera_helper_name, "isaacsim.ros2.bridge.ROS2CameraHelper")
+            ]
+            graph_config[keys.CONNECT] += [
+                ("set_camera.outputs:execOut", f"{camera_helper_name}.inputs:execIn"),
+                ("get_render_product.outputs:renderProductPath", f"{camera_helper_name}.inputs:renderProductPath")
+            ]
+            graph_config[keys.SET_VALUES] += [
+                (f"{camera_helper_name}.inputs:nodeNamespace", self._namespace),
+                (f"{camera_helper_name}.inputs:frameId", self._tf_frame_id),
+                (f"{camera_helper_name}.inputs:topicName", f"{self._base_topic}/{camera_type}"),
+                (f"{camera_helper_name}.inputs:type", camera_type)
+            ]
 
-        #     # Publish labels for specific camera types
-        #     if self._publish_labels and camera_type in ["semantic_segmentation", "instance_segmentation", "bbox_2d_tight", "bbox_2d_loose", "bbox_3d"]:
-        #         graph_config[keys.SET_VALUES] += [
-        #             (camera_helper_name + ".inputs:enableSemanticLabels", True),
-        #             (camera_helper_name + ".inputs:semanticLabelsTopicName", f"{self._frame_id}/{camera_type}_labels")
-        #         ]
+            # Publish labels for specific camera types
+            if self._publish_labels and camera_type in ["semantic_segmentation", "instance_segmentation", "bbox_2d_tight", "bbox_2d_loose", "bbox_3d"]:
+                graph_config[keys.SET_VALUES] += [
+                    (camera_helper_name + ".inputs:enableSemanticLabels", True),
+                    (camera_helper_name + ".inputs:semanticLabelsTopicName", f"{self._frame_id}/{camera_type}_labels")
+                ]
 
-        #     valid_camera_type = True
+            valid_camera_type = True
 
-        # if not valid_camera_type:
-        #     carb.log_error(f"Cannot create ROS2 Camera graph, no valid camera type was selected")
-        #     return
+        # Create the CameraInfo topic if requested (now in Isaac 5.1.0 it uses an independent node)
+        for camera_type in self._types:
+            if not camera_type in ["camera_info"]:
+                continue
+
+            camera_helper_name = f"camera_helper_{camera_type}"
+
+            graph_config[keys.CREATE_NODES] += [
+                (camera_helper_name, "isaacsim.ros2.bridge.ROS2CameraInfoHelper")
+            ]
+
+            graph_config[keys.SET_VALUES] += [
+                (f"{camera_helper_name}.inputs:nodeNamespace", self._namespace),
+                (f"{camera_helper_name}.inputs:frameId", self._tf_frame_id),
+                (f"{camera_helper_name}.inputs:topicName", f"{self._base_topic}/{camera_type}"),
+            ]
+
+            graph_config[keys.CONNECT] += [
+                ("set_camera.outputs:execOut", f"{camera_helper_name}.inputs:execIn"),
+                ("get_render_product.outputs:renderProductPath", f"{camera_helper_name}.inputs:renderProductPath")
+            ]
+
+
+            valid_camera_type = True
+
+        if not valid_camera_type:
+            carb.log_error(f"Cannot create ROS2 Camera graph, no valid camera type was selected")
+            return
+
 
         # Create the camera graph
         (graph, _, _, _) = og.Controller.edit(
