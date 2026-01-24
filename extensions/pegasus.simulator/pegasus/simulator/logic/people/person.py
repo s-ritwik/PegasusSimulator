@@ -33,6 +33,7 @@ from pegasus.simulator.logic.people_manager import PeopleManager
 from pegasus.simulator.logic.people.person_controller import PersonController
 from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
 
+
 class Person:
     """
     Class that implements a person in the simulation world. The person can be controlled by a controller that inherits from the PersonController class.
@@ -77,7 +78,7 @@ class Person:
         # Variable that will hold the current state of the vehicle
         self._state = State()
         self._state.position = np.array(init_pos)
-        self._state.orientation = Rotation.from_euler('z', init_yaw, degrees=False).as_quat()
+        self._state.attitude = Rotation.from_euler('z', init_yaw, degrees=False).as_quat()
 
         # Auxiliar variable to compute the velocity of the person using discrete differentiation
         self._previous_position = np.array(init_pos)
@@ -231,7 +232,7 @@ class Person:
         # # Note: this is done to avoid the error of the character_graph being None. The animation graph is only created after the simulation starts
         if not self.character_graph or self.character_graph is None:
             self.character_graph = ag.get_character(self.character_skel_root_stage_path)
-            
+
         # If the character graph is not None, then we can update the character
         if self.character_graph:
 
@@ -242,7 +243,7 @@ class Person:
 
             # Update the current state of the person
             self._state.position = np.array([pos[0], pos[1], pos[2]])
-            self._state.orientation = np.array([rot.x, rot.y, rot.z, rot.w])
+            self._state.attitude = np.array([rot.x, rot.y, rot.z, rot.w])
 
             # Compute the velocity in the inertial frame using discrete differentiation
             self._total_dt += dt
