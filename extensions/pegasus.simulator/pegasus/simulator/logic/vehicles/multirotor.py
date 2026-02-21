@@ -6,6 +6,10 @@
 """
 
 import numpy as np
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
 from omni.isaac.dynamic_control import _dynamic_control
 
@@ -189,40 +193,107 @@ class Multirotor(Vehicle):
         # Get the relative position of the rotors with respect to the body frame of the vehicle (ignoring the orientation for now)
         relative_poses = self.get_dc_interface().get_relative_body_poses(rb, rotors)
 
-        # Define the alocation matrix
-        aloc_matrix = np.zeros((4, self._thrusters._num_rotors))
-        
-        # Define the first line of the matrix (T [N])
-        aloc_matrix[0, :] = np.array(self._thrusters._rotor_constant)                                           
+        if torch is None:
+            # Define the alocation matrix
+            aloc_matrix = np.zeros((4, self._thrusters._num_rotors))
 
-        # Define the second and third lines of the matrix (\tau_x [Nm] and \tau_y [Nm])
-        aloc_matrix[1, :] = np.array([relative_poses[i].p[1] * self._thrusters._rotor_constant[i] for i in range(self._thrusters._num_rotors)])
-        aloc_matrix[2, :] = np.array([-relative_poses[i].p[0] * self._thrusters._rotor_constant[i] for i in range(self._thrusters._num_rotors)])
+            # Define the first line of the matrix (T [N])
+            aloc_matrix[0, :] = np.array(self._thrusters._rotor_constant)
 
-        # Define the forth line of the matrix (\tau_z [Nm])
-        aloc_matrix[3, :] = np.array([self._thrusters._rolling_moment_coefficient[i] * self._thrusters._rot_dir[i] for i in range(self._thrusters._num_rotors)])
+            # Define the second and third lines of the matrix (\tau_x [Nm] and \tau_y [Nm])
+            aloc_matrix[1, :] = np.array(
+                [relative_poses[i].p[1] * self._thrusters._rotor_constant[i] for i in range(self._thrusters._num_rotors)]
+            )
+            aloc_matrix[2, :] = np.array(
+                [-relative_poses[i].p[0] * self._thrusters._rotor_constant[i] for i in range(self._thrusters._num_rotors)]
+            )
 
-        # Compute the inverse allocation matrix, so that we can get the angular velocities (squared) from the total thrust and torques
-        aloc_inv = np.linalg.pinv(aloc_matrix)
+            # Define the forth line of the matrix (\tau_z [Nm])
+            aloc_matrix[3, :] = np.array(
+                [
+                    self._thrusters._rolling_moment_coefficient[i] * self._thrusters._rot_dir[i]
+                    for i in range(self._thrusters._num_rotors)
+                ]
+            )
 
-        # Compute the target angular velocities (squared)
-        squared_ang_vel = aloc_inv @ np.array([force, torque[0], torque[1], torque[2]])
+            # Compute the inverse allocation matrix, so that we can get the angular velocities (squared) from the total thrust and torques
+            aloc_inv = np.linalg.pinv(aloc_matrix)
+
+            # Compute the target angular velocities (squared)
+            squared_ang_vel = aloc_inv @ np.array([force, torque[0], torque[1], torque[2]])
+
+            # Making sure that there is no negative value on the target squared angular velocities
+            squared_ang_vel[squared_ang_vel < 0] = 0.0
+
+            # ------------------------------------------------------------------------------------------------
+            # Saturate the inputs while preserving their relation to each other, by performing a normalization
+            # ------------------------------------------------------------------------------------------------
+            max_thrust_vel_squared = np.power(self._thrusters.max_rotor_velocity[0], 2)
+            max_val = np.max(squared_ang_vel)
+
+            if max_val >= max_thrust_vel_squared:
+                normalize = np.maximum(max_val / max_thrust_vel_squared, 1.0)
+                squared_ang_vel = squared_ang_vel / normalize
+
+            # Compute the angular velocities for each rotor in [rad/s]
+            return np.sqrt(squared_ang_vel)
+
+        # Build the allocation in torch so the controller path can stay tensor-based.
+        use_tensor_output = isinstance(force, torch.Tensor) or isinstance(torque, torch.Tensor)
+        device = (
+            force.device
+            if isinstance(force, torch.Tensor)
+            else torque.device
+            if isinstance(torque, torch.Tensor)
+            else torch.device("cpu")
+        )
+        dtype = (
+            force.dtype
+            if isinstance(force, torch.Tensor)
+            else torque.dtype
+            if isinstance(torque, torch.Tensor)
+            else torch.float32
+        )
+
+        num_rotors = self._thrusters._num_rotors
+        rotor_constant = torch.as_tensor(self._thrusters._rotor_constant, device=device, dtype=dtype)
+        rolling_coeff = torch.as_tensor(self._thrusters._rolling_moment_coefficient, device=device, dtype=dtype)
+        rot_dir = torch.as_tensor(self._thrusters._rot_dir, device=device, dtype=dtype)
+
+        aloc_matrix = torch.zeros((4, num_rotors), device=device, dtype=dtype)
+        aloc_matrix[0, :] = rotor_constant
+        aloc_matrix[1, :] = torch.as_tensor(
+            [relative_poses[i].p[1] for i in range(num_rotors)], device=device, dtype=dtype
+        ) * rotor_constant
+        aloc_matrix[2, :] = -torch.as_tensor(
+            [relative_poses[i].p[0] for i in range(num_rotors)], device=device, dtype=dtype
+        ) * rotor_constant
+        aloc_matrix[3, :] = rolling_coeff * rot_dir
+
+        # Compute the inverse allocation matrix, so that we can get the angular velocities (squared)
+        # from the total thrust and torques.
+        aloc_inv = torch.linalg.pinv(aloc_matrix)
+
+        torque_t = torch.as_tensor(torque, device=device, dtype=dtype)
+        desired = torch.stack((torch.as_tensor(force, device=device, dtype=dtype), torque_t[0], torque_t[1], torque_t[2]))
+        squared_ang_vel = aloc_inv @ desired
 
         # Making sure that there is no negative value on the target squared angular velocities
-        squared_ang_vel[squared_ang_vel < 0] = 0.0
+        squared_ang_vel = torch.clamp(squared_ang_vel, min=0.0)
 
         # ------------------------------------------------------------------------------------------------
         # Saturate the inputs while preserving their relation to each other, by performing a normalization
         # ------------------------------------------------------------------------------------------------
-        max_thrust_vel_squared = np.power(self._thrusters.max_rotor_velocity[0], 2)
-        max_val = np.max(squared_ang_vel)
+        max_thrust_vel_squared = torch.as_tensor(self._thrusters.max_rotor_velocity[0], device=device, dtype=dtype) ** 2
+        max_val = torch.max(squared_ang_vel)
 
         if max_val >= max_thrust_vel_squared:
-            normalize = np.maximum(max_val / max_thrust_vel_squared, 1.0)
-
+            normalize = torch.maximum(max_val / max_thrust_vel_squared, torch.as_tensor(1.0, device=device, dtype=dtype))
             squared_ang_vel = squared_ang_vel / normalize
 
         # Compute the angular velocities for each rotor in [rad/s]
-        ang_vel = np.sqrt(squared_ang_vel)
+        ang_vel = torch.sqrt(squared_ang_vel)
 
-        return ang_vel
+        if use_tensor_output:
+            return ang_vel
+        return ang_vel.detach().cpu().numpy()

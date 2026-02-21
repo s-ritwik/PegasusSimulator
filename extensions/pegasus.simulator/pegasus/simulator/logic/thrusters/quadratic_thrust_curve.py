@@ -5,6 +5,10 @@
 | License: BSD-3-Clause. Copyright (c) 2023, Marcelo Jacinto. All rights reserved.
 """
 import numpy as np
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 from pegasus.simulator.logic.state import State
 from pegasus.simulator.logic.thrusters.thrust_curve import ThrustCurve
 
@@ -82,25 +86,49 @@ class QuadraticThrustCurve(ThrustCurve):
             dt (float): The time elapsed between the previous and current function calls (s).
         """
 
-        rolling_moment = 0.0
+        if torch is None:
+            rolling_moment = 0.0
 
-        # Compute the actual force to apply to the rotors and the rolling moment contribution
-        for i in range(self._num_rotors):
+            # Compute the actual force to apply to the rotors and the rolling moment contribution
+            for i in range(self._num_rotors):
 
-            # Set the actual velocity that each rotor is spinning at (instanenous model - no delay introduced)
-            # Only apply clipping of the input reference
-            self._velocity[i] = np.maximum(
-                self.min_rotor_velocity[i], np.minimum(self._input_reference[i], self.max_rotor_velocity[i])
+                # Set the actual velocity that each rotor is spinning at (instanenous model - no delay introduced)
+                # Only apply clipping of the input reference
+                self._velocity[i] = np.maximum(
+                    self.min_rotor_velocity[i], np.minimum(self._input_reference[i], self.max_rotor_velocity[i])
+                )
+
+                # Set the force using a quadratic thrust curve
+                self._force[i] = self._rotor_constant[i] * np.power(self._velocity[i], 2)
+
+                # Compute the rolling moment coefficient
+                rolling_moment += self._rolling_moment_coefficient[i] * np.power(self._velocity[i], 2.0) * self._rot_dir[i]
+
+            # Update the rolling moment variable
+            self._rolling_moment = rolling_moment
+        else:
+            input_reference = torch.as_tensor(self._input_reference, dtype=torch.float32)
+            min_rotor_velocity = torch.as_tensor(self.min_rotor_velocity, dtype=torch.float32, device=input_reference.device)
+            max_rotor_velocity = torch.as_tensor(self.max_rotor_velocity, dtype=torch.float32, device=input_reference.device)
+            rotor_constant = torch.as_tensor(self._rotor_constant, dtype=torch.float32, device=input_reference.device)
+            rolling_moment_coeff = torch.as_tensor(
+                self._rolling_moment_coefficient, dtype=torch.float32, device=input_reference.device
             )
+            rot_dir = torch.as_tensor(self._rot_dir, dtype=torch.float32, device=input_reference.device)
+
+            # Set the actual velocity that each rotor is spinning at (instantaneous model - no delay introduced)
+            velocity = torch.clamp(input_reference, min=min_rotor_velocity, max=max_rotor_velocity)
 
             # Set the force using a quadratic thrust curve
-            self._force[i] = self._rotor_constant[i] * np.power(self._velocity[i], 2)
+            force = rotor_constant * torch.pow(velocity, 2.0)
 
             # Compute the rolling moment coefficient
-            rolling_moment += self._rolling_moment_coefficient[i] * np.power(self._velocity[i], 2.0) * self._rot_dir[i]
+            rolling_moment = torch.sum(rolling_moment_coeff * torch.pow(velocity, 2.0) * rot_dir)
 
-        # Update the rolling moment variable
-        self._rolling_moment = rolling_moment
+            # Update the internal state as Python lists/floats, preserving external interface.
+            self._velocity = velocity.detach().cpu().tolist()
+            self._force = force.detach().cpu().tolist()
+            self._rolling_moment = float(rolling_moment.item())
 
         # Return the forces and velocities on each rotor and total torque applied on the body frame
         return self._force, self._velocity, self._rolling_moment

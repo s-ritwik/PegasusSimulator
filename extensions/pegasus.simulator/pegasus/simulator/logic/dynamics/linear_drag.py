@@ -5,6 +5,10 @@
 | License: BSD-3-Clause. Copyright (c) 2023, Marcelo Jacinto. All rights reserved.
 """
 import numpy as np
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 from pegasus.simulator.logic.dynamics.drag import Drag
 from pegasus.simulator.logic.state import State
 
@@ -27,10 +31,13 @@ class LinearDrag(Drag):
         super().__init__()
 
         # The linear drag coefficients of the vehicle's body frame
-        self._drag_coefficients = np.diag(drag_coefficients)
+        if torch is None:
+            self._drag_coefficients = np.diag(drag_coefficients)
+        else:
+            self._drag_coefficients = torch.diag(torch.as_tensor(drag_coefficients, dtype=torch.float32))
 
         # The drag force to apply on the vehicle's body frame
-        self._drag_force = np.array([0.0, 0.0, 0.0])
+        self._drag_force = [0.0, 0.0, 0.0]
 
     @property
     def drag(self):
@@ -59,5 +66,9 @@ class LinearDrag(Drag):
         body_vel = state.linear_body_velocity
 
         # Compute the component of the drag force to be applied in the body frame
-        self._drag_force = -np.dot(self._drag_coefficients, body_vel)
+        if torch is None:
+            self._drag_force = (-np.dot(self._drag_coefficients, body_vel)).tolist()
+        else:
+            body_vel_t = torch.as_tensor(body_vel, dtype=self._drag_coefficients.dtype, device=self._drag_coefficients.device)
+            self._drag_force = (-(self._drag_coefficients @ body_vel_t)).detach().cpu().tolist()
         return self._drag_force

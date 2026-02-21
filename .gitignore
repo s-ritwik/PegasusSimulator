@@ -40,4 +40,6 @@ _build
 # ROS 2
 build/
 install/
-log/
+log/.vscode/
+.vscode/
+*.db
