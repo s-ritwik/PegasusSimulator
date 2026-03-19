@@ -7,8 +7,8 @@
 """
 
 # Imports to start Isaac Sim from this script
-import carb
 from isaacsim import SimulationApp
+import carb
 
 # Start Isaac Sim's simulation environment
 # Note: this simulation app must be instantiated right after the SimulationApp import, otherwise the simulator will crash

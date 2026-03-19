@@ -17,7 +17,7 @@ parser.add_argument("--headless", action="store_true", help="Run Isaac Sim in he
 parser.add_argument(
     "--control_mode",
     type=str,
-    default="accel",
+    default="velocity",
     choices=("accel", "velocity"),
     help="Select input mode: accel=(ax,ay,az,yaw_rate) or velocity=(vx,vy,vz,yaw_rate).",
 )
@@ -36,12 +36,18 @@ parser.add_argument(
 parser.add_argument("--ax", type=float, default=0.0, help="Constant acceleration setpoint ax [m/s^2] in ENU.")
 parser.add_argument("--ay", type=float, default=0.0, help="Constant acceleration setpoint ay [m/s^2] in ENU.")
 parser.add_argument("--az", type=float, default=0.0, help="Constant acceleration setpoint az [m/s^2] in ENU.")
-parser.add_argument("--vx", type=float, default=0.0, help="Constant velocity setpoint vx [m/s] in ENU.")
+parser.add_argument("--vx", type=float, default=0.2, help="Constant velocity setpoint vx [m/s] in ENU.")
 parser.add_argument("--vy", type=float, default=0.0, help="Constant velocity setpoint vy [m/s] in ENU.")
-parser.add_argument("--vz", type=float, default=0.0, help="Constant velocity setpoint vz [m/s] in ENU.")
+parser.add_argument("--vz", type=float, default=0.2, help="Constant velocity setpoint vz [m/s] in ENU.")
 parser.add_argument("--yaw_rate", type=float, default=0.0, help="Constant yaw-rate setpoint [rad/s].")
 parser.add_argument("--device", type=str, default="cpu", help="Torch device for controller math (for example: cpu, cuda:0).")
 parser.add_argument("--data", action="store_true", help="Print simulation-fetched vx,vy,vz and ax,ay,az every physics update.")
+parser.add_argument(
+    "--platform_texture",
+    type=str,
+    default="/home/rycker/projects/ros2_ws/src/stewart_platform_learning/src/stewart_platform/aruco_visual_marker_fractal/materials/textures/aruco_mark_fractal.png",
+    help="PNG file path to project on the top of /World/platform. If relative, it is resolved from the examples folder.",
+)
 
 args_cli, _ = parser.parse_known_args()
 if args_cli.num_envs < 1:
@@ -59,6 +65,7 @@ simulation_app = SimulationApp({"headless": args_cli.headless})
 import omni.timeline
 from omni.isaac.core.world import World
 import isaacsim.core.utils.prims as prim_utils
+from pxr import Sdf, UsdGeom, UsdShade
 
 from pegasus.simulator.params import ROBOTS, SIMULATION_ENVIRONMENTS
 from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
@@ -83,10 +90,16 @@ class PegasusApp:
         self.pg._world = World(**self.pg._world_settings)
         self.world = self.pg.world
 
+        self.curr_dir = str(Path(os.path.dirname(os.path.realpath(__file__))).resolve())
+        if os.path.isabs(args_cli.platform_texture):
+            self.platform_texture = args_cli.platform_texture
+        else:
+            self.platform_texture = str((Path(self.curr_dir) / args_cli.platform_texture).resolve())
+
         self.pg.load_environment(SIMULATION_ENVIRONMENTS["Curved Gridroom"])
         self._setup_lighting()
+        self._setup_platform()
 
-        self.curr_dir = str(Path(os.path.dirname(os.path.realpath(__file__))).resolve())
         self.results_dir = self.curr_dir + "/results"
         os.makedirs(self.results_dir, exist_ok=True)
 
@@ -133,6 +146,80 @@ class PegasusApp:
                 "inputs:color": (0.84, 0.90, 1.0),
             },
         )
+
+    def _setup_platform(self):
+        # 1x1x0.2 static box centered at z=0.1 so it sits on the floor, named "platform".
+        platform_path = "/World/platform"
+        prim_utils.create_prim(
+            platform_path,
+            "Cube",
+            position=(0.0, 0.0, 0.1),
+            scale=(1.0, 1.0, 0.2),
+            attributes={
+                "size": 1.0,
+                "primvars:displayColor": [(0.28, 0.28, 0.28)],
+            },
+        )
+
+        if not os.path.isfile(self.platform_texture):
+            carb.log_warn(
+                "Platform texture file not found at: "
+                + self.platform_texture
+                + ". The platform will be created without a top image."
+            )
+            return
+
+        stage = self.world.stage
+
+        # Add a thin quad just above the top face so only the top shows the PNG.
+        decal_mesh_path = Sdf.Path("/World/platform/top_decal")
+        decal_mesh = UsdGeom.Mesh.Define(stage, decal_mesh_path)
+        # Local Z in the platform frame: top face is at +0.5 for a unit cube.
+        decal_z = 0.5005
+        decal_mesh.CreatePointsAttr(
+            [
+                (-0.5, -0.5, decal_z),
+                (0.5, -0.5, decal_z),
+                (0.5, 0.5, decal_z),
+                (-0.5, 0.5, decal_z),
+            ]
+        )
+        decal_mesh.CreateFaceVertexCountsAttr([4])
+        decal_mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        decal_mesh.CreateNormalsAttr([(0.0, 0.0, 1.0)] * 4)
+        decal_mesh.SetNormalsInterpolation("vertex")
+        decal_mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+
+        primvars_api = UsdGeom.PrimvarsAPI(decal_mesh)
+        st_primvar = primvars_api.CreatePrimvar(
+            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+        )
+        st_primvar.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        material_path = Sdf.Path("/World/Looks/platform_top_material")
+        material = UsdShade.Material.Define(stage, material_path)
+
+        pbr_shader = UsdShade.Shader.Define(stage, material_path.AppendPath("PreviewSurface"))
+        pbr_shader.CreateIdAttr("UsdPreviewSurface")
+        pbr_shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.4)
+        pbr_shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+
+        uv_reader = UsdShade.Shader.Define(stage, material_path.AppendPath("PrimvarReader_st"))
+        uv_reader.CreateIdAttr("UsdPrimvarReader_float2")
+        uv_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+        uv_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+        tex_shader = UsdShade.Shader.Define(stage, material_path.AppendPath("TopTexture"))
+        tex_shader.CreateIdAttr("UsdUVTexture")
+        tex_shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(self.platform_texture))
+        tex_shader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(uv_reader.ConnectableAPI(), "result")
+        tex_shader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+
+        pbr_shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+            tex_shader.ConnectableAPI(), "rgb"
+        )
+        material.CreateSurfaceOutput().ConnectToSource(pbr_shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI(decal_mesh.GetPrim()).Bind(material)
 
     def _spawn_vehicle(self, env_id: int):
         side = math.ceil(math.sqrt(self.num_envs))
